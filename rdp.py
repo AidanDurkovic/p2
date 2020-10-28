@@ -63,11 +63,14 @@ rdpSocket.settimeout(2)
 
 readFile = open(args.read_file_name, "r")
 f = readFile.read()
-
-recvWindow = "2048"
+writeString = ""
+totalPackets = int(len(f)/1024) + 1
+writtenPackets = 0
+recvWindow = int(totalPackets ** (2/3))*1024
 acknum = 0
 seqnum = 0
-packetsSent = 0
+fileDone = False
+
 #Send SYN
 outPacket = packet("SYN",seqnum,-1,-1,0)
 rdpSocket.sendto(outPacket.packString().encode(), ("h2", 8888))
@@ -94,18 +97,16 @@ while True:
         rdpSocket.sendto(outPacket.packString().encode(), ("h2", 8888))
         outputLog("Send",outPacket)
 
-
-
-
 while True:
-    if 0:  # toDo (all packets sent)
+    if fileDone: #all packets sent
         break
     if recvWindow > 0:  # window still has room
         if noLoss:  # toDo (detect loss) (Sends new packets if no loss detected)
             outPacket = packet("DAT")  # create packet
            
-            if (len(f) - readFile.tell()) <= 1024:  # Remaining file size is less than a full packet
-                outPacket.length = len(f) - readFile.tell()
+            if (len(f) - seqnum <= 1024):  # Remaining file size is less than a full packet
+                outPacket.length = len(f) - seqnum
+                fileDone = True
             elif recvWindow > 1024:  # send full packet
                 outPacket.length = 1024
             else:  # send partial packet
@@ -115,27 +116,44 @@ while True:
             recvWindow -= outPacket.length
             outPacket.data = f[seqnum:outPacket.length]
             outPacket.data = outPacket.data + "\n"
-            packetsSent += 1
-            seqnum += outPacket.length
             rdpSocket.sendto(outPacket.packString().encode(), ("h2", 8888))
+            seqnum += outPacket.length
+            outputLog("Send",outPacket)
 
-        else:  # loss detected. Resend previous window of packets
-            print()
-    else: #send packets now that window is full | 
+        else:  # loss detected. Resend packet(s)
+            data, addr = rdpSocket.recvfrom(3072) #get last ack packet
+            inPacket = packPacket(data)
+            seqnum = inPacket.ack #send from last confirmed successful packet
+            noLoss = True
+    else: #recieve packets now that window is full 
         while True:
             try:
                 data, addr = rdpSocket.recvfrom(3072) #recv with room for header too
-                data = data[0:-1]
                 inPacket = packPacket(data) #convert data into packet object
+                outputLog("Receive",inPacket)
 
                 if inPacket.command == "DAT":
                     #recieve DAT packet with sequence number and length 
-                    #send ack packets until seq# = ack#
-                    print()
+                    inSeq = inPacket.seq
+                    if inSeq == acknum: #packet in correct sequence
+                        acknum = inSeq + inPacket.length
+                        recvWindow += inPacket.length
+                        outPacket = packet("ACK",-1,acknum,1024)
+                        rdpSocket.sendto(outPacket.packString().encode(), ("h2",8888))
+                        outputLog("Send", outPacket)
+                        writeString += inPacket.data
+                        writtenPackets += 1
+                    else: #packet is out of order
+                        print("Packet out of order")
+                        noLoss = False
+                        break
+                else: #command = ACK
+                    if seqnum == inPacket.ack: #Data received
+                        break
             except socket.timeout:
                 noLoss = False
                 break
-            
+            #hi
 
 
 
